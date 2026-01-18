@@ -4,6 +4,12 @@ A real-time 3D visualization of Claude Code activity, rendered as a cyberpunk ci
 
 ![Claude Skyline](https://img.shields.io/badge/Three.js-black?style=flat&logo=three.js)
 
+
+
+https://github.com/user-attachments/assets/c3a21c80-6f74-4d42-8eb5-82317d3cf800
+
+
+
 ## Features
 
 - **Session Buildings**: Each Claude Code instance gets its own skyscraper that grows taller as context accumulates

@@ -1,0 +1,1662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude City - Bustling Skyline</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #05050a;
+      overflow: hidden;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    #canvas { display: block; }
+
+    #feed {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      width: 280px;
+      max-height: 320px;
+      overflow-y: auto;
+      background: linear-gradient(135deg, rgba(10, 10, 25, 0.95), rgba(20, 10, 30, 0.95));
+      border: 1px solid rgba(255, 100, 50, 0.4);
+      border-radius: 4px;
+      padding: 12px;
+      font-size: 11px;
+      color: #a0a0c0;
+      box-shadow: 0 0 40px rgba(255, 100, 50, 0.15), inset 0 0 20px rgba(0,0,0,0.5);
+    }
+    #feed::-webkit-scrollbar { width: 3px; }
+    #feed::-webkit-scrollbar-thumb { background: rgba(255, 100, 50, 0.5); }
+    #feed h3 { color: #ff6633; margin-bottom: 10px; font-size: 10px; text-transform: uppercase; letter-spacing: 2px; }
+    .event { padding: 6px 8px; margin-bottom: 4px; background: rgba(20, 20, 40, 0.6); border-radius: 2px; border-left: 2px solid #444; animation: slideIn 0.3s ease; }
+    @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+    .event.tool-Read { border-color: #4a9eff; }
+    .event.tool-Write, .event.tool-Edit { border-color: #50fa7b; }
+    .event.tool-Bash { border-color: #ffb86c; }
+    .event.tool-Glob, .event.tool-Grep { border-color: #ff79c6; }
+    .event.tool-Task { border-color: #bd93f9; }
+    .event-type { font-weight: bold; color: #ddd; font-size: 10px; }
+    .event-detail { color: #666; font-size: 9px; margin-top: 2px; }
+
+    #stats {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      background: linear-gradient(135deg, rgba(10, 10, 25, 0.95), rgba(20, 10, 30, 0.95));
+      border: 1px solid rgba(255, 100, 50, 0.4);
+      border-radius: 4px;
+      padding: 12px 16px;
+      color: #a0a0c0;
+      font-size: 11px;
+      box-shadow: 0 0 40px rgba(255, 100, 50, 0.15);
+    }
+    #stats h3 { color: #ff6633; margin-bottom: 8px; font-size: 10px; text-transform: uppercase; letter-spacing: 2px; }
+    .stat-row { display: flex; justify-content: space-between; margin: 4px 0; gap: 20px; }
+    .stat-value { color: #fff; font-weight: bold; }
+
+    #status {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      padding: 6px 14px;
+      border-radius: 2px;
+      font-size: 10px;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+    #status.connected { background: rgba(80, 250, 123, 0.2); color: #50fa7b; border: 1px solid rgba(80, 250, 123, 0.4); }
+    #status.disconnected { background: rgba(255, 85, 85, 0.2); color: #ff5555; border: 1px solid rgba(255, 85, 85, 0.4); }
+
+    #billboard { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="status" class="disconnected">Disconnected</div>
+  <div id="feed"><h3>Activity Feed</h3><div id="events"></div></div>
+  <div id="stats">
+    <h3>City Stats</h3>
+    <div class="stat-row"><span>Context</span><span class="stat-value" id="stat-context">0</span></div>
+    <div class="stat-row"><span>Active</span><span class="stat-value" id="stat-active">0</span></div>
+    <div class="stat-row"><span>Tools</span><span class="stat-value" id="stat-tools">0</span></div>
+    <div class="stat-row"><span>Success</span><span class="stat-value" id="stat-success">-</span></div>
+  </div>
+  <div id="billboard"><div class="tool-name" id="billboard-tool"></div><div class="tool-detail" id="billboard-detail"></div></div>
+
+  <script type="importmap">
+  { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+    const TOOL_COLORS = {
+      Read: 0x4a9eff, Write: 0x50fa7b, Edit: 0x50fa7b, Bash: 0xffb86c,
+      Glob: 0xff79c6, Grep: 0xff79c6, Task: 0xbd93f9, WebFetch: 0x8be9fd,
+      WebSearch: 0x8be9fd, TodoWrite: 0xf1fa8c, AskUserQuestion: 0xff5555, default: 0xffffaa
+    };
+
+    // Scene
+    const canvas = document.getElementById('canvas');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a1a0a);
+    scene.fog = new THREE.FogExp2(0x0a1a0a, 0.003);
+
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 80, 150);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(1); // Fixed at 1 for performance
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2), 1.5, 0.3, 0.85);
+    composer.addPass(bloomPass);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.maxPolarAngle = Math.PI / 2.05;
+    controls.minDistance = 30;
+    controls.maxDistance = 300;
+    controls.autoRotate = false;
+
+    // Lighting
+    scene.add(new THREE.AmbientLight(0x111122, 0.5));
+    const moonLight = new THREE.DirectionalLight(0x4466aa, 0.3);
+    moonLight.position.set(30, 50, -20);
+    scene.add(moonLight);
+
+    // Ground
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(300, 300),
+      new THREE.MeshStandardMaterial({ color: 0x0a2a0a, roughness: 0.95 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    scene.add(ground);
+
+    // Streets - dark asphalt
+    const streetMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 });
+
+    // Main horizontal street (Z = 20)
+    const mainStreet = new THREE.Mesh(new THREE.PlaneGeometry(200, 8), streetMat);
+    mainStreet.rotation.x = -Math.PI / 2;
+    mainStreet.position.set(0, 0.03, 20);
+    scene.add(mainStreet);
+
+
+    // Vertical streets connecting to buildings
+    [-35, 0, 35].forEach(x => {
+      const vStreet = new THREE.Mesh(new THREE.PlaneGeometry(6, 60), streetMat);
+      vStreet.rotation.x = -Math.PI / 2;
+      vStreet.position.set(x, 0.03, -10);
+      scene.add(vStreet);
+    });
+
+    // Subtle green grid overlay - covers full city ground
+    const gridMat = new THREE.LineBasicMaterial({ color: 0x50fa7b, transparent: true, opacity: 0.06 });
+    for (let i = -150; i <= 150; i += 8) {
+      scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(i, 0.02, -150), new THREE.Vector3(i, 0.02, 150)]), gridMat));
+      scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-150, 0.02, i), new THREE.Vector3(150, 0.02, i)]), gridMat));
+    }
+
+    // Water
+    const water = new THREE.Mesh(
+      new THREE.PlaneGeometry(300, 50),
+      new THREE.MeshStandardMaterial({ color: 0x0a1828, roughness: 0.05, metalness: 0.95, transparent: true, opacity: 0.9 })
+    );
+    water.rotation.x = -Math.PI / 2;
+    water.position.set(0, 0.01, 55);
+    scene.add(water);
+
+    // Stars
+    const starGeo = new THREE.BufferGeometry();
+    const starPos = new Float32Array(1000 * 3);
+    for (let i = 0; i < 1000; i++) {
+      starPos[i*3] = (Math.random() - 0.5) * 400;
+      starPos[i*3+1] = Math.random() * 120 + 40;
+      starPos[i*3+2] = (Math.random() - 0.5) * 400 - 50;
+    }
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ size: 0.6, color: 0xffffff, transparent: true, opacity: 0.8 }));
+    scene.add(stars);
+
+    // Moon
+    const moon = new THREE.Mesh(new THREE.SphereGeometry(6, 32, 32), new THREE.MeshBasicMaterial({ color: 0xffffee }));
+    moon.position.set(70, 70, -100);
+    scene.add(moon);
+    const moonGlow = new THREE.Mesh(new THREE.SphereGeometry(12, 32, 32), new THREE.MeshBasicMaterial({ color: 0xffffcc, transparent: true, opacity: 0.08 }));
+    moonGlow.position.copy(moon.position);
+    scene.add(moonGlow);
+
+    // CLAUDE CODE neon sign - pixel font behind buildings
+    const neonPixels = [];
+    const pixelFont = {
+      'C': [[1,1,1],[1,0,0],[1,0,0],[1,0,0],[1,1,1]],
+      'L': [[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,1,1]],
+      'A': [[0,1,0],[1,0,1],[1,1,1],[1,0,1],[1,0,1]],
+      'U': [[1,0,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
+      'D': [[1,1,0],[1,0,1],[1,0,1],[1,0,1],[1,1,0]],
+      'E': [[1,1,1],[1,0,0],[1,1,0],[1,0,0],[1,1,1]],
+      'O': [[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
+      ' ': [[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0]]
+    };
+    const neonText = 'CLAUDE CODE';
+    const pixelSize = 1.2;
+    const letterSpacing = 4;
+    const totalWidth = neonText.length * letterSpacing * pixelSize;
+    const startX = -totalWidth / 2;
+    const signY = 45;
+    const signZ = -70;
+
+    const neonMat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.95 });
+    const neonGlowMat = new THREE.MeshBasicMaterial({ color: 0xff4400, transparent: true, opacity: 0.3 });
+    const pixelGeo = new THREE.BoxGeometry(pixelSize * 0.8, pixelSize * 0.8, pixelSize * 0.4);
+    const glowGeo = new THREE.BoxGeometry(pixelSize * 1.4, pixelSize * 1.4, pixelSize * 0.2);
+
+    neonText.split('').forEach((char, charIndex) => {
+      const pattern = pixelFont[char] || pixelFont[' '];
+      pattern.forEach((row, rowIndex) => {
+        row.forEach((pixel, colIndex) => {
+          if (pixel) {
+            const x = startX + charIndex * letterSpacing * pixelSize + colIndex * pixelSize;
+            const y = signY + (4 - rowIndex) * pixelSize;
+
+            const block = new THREE.Mesh(pixelGeo, neonMat); // Share material
+            block.position.set(x, y, signZ);
+            scene.add(block);
+
+            const glow = new THREE.Mesh(glowGeo, neonGlowMat); // Share material
+            glow.position.set(x, y, signZ - 0.3);
+            scene.add(glow);
+
+            neonPixels.push({ block, glow });
+          }
+        });
+      });
+    });
+
+    // Dynamic Building class - height grows with context
+    class Building {
+      constructor(x, z, config = {}) {
+        this.x = x;
+        this.z = z;
+        this.isMain = config.isMain || false;
+        this.isClaudeStyle = config.claudeStyle || config.isMain || false;
+        this.baseWidth = config.width || 4;
+        this.baseDepth = config.depth || 4;
+        this.minHeight = config.minHeight || 8;
+        this.maxHeight = config.maxHeight || (this.isMain ? 80 : 30);
+        this.currentHeight = this.minHeight;
+        this.targetHeight = this.minHeight;
+        this.color = config.color || 0x1a1a2a;
+        this.accentColor = config.accentColor || (this.isClaudeStyle ? 0xd4a574 : 0x3a3a5a);
+        this.name = config.name || '';
+
+        this.windows = [];
+        this.activeTools = new Map();
+        this.waitingForUser = false;
+        this.pulsePhase = Math.random() * Math.PI * 2;
+
+        // Activity tracking for window lighting
+        this.activityLevel = 0;
+        this.lastActivityTime = Date.now();
+        this.idleThreshold = 5000;
+        this.isIdle = false;
+
+        // Bustling city enhancements
+        this.activityBurst = 0; // Visual pulse on activity
+        this.energyBeam = null; // Vertical light column
+        this.windowCascade = []; // Queue of windows to light up in sequence
+        this.toolHistory = []; // Recent tools for multi-color effects
+
+        this.group = new THREE.Group();
+        this.group.position.set(x, 0, z);
+        scene.add(this.group);
+
+        this.buildStructure();
+        if (this.name) this.addSign();
+      }
+
+      buildStructure() {
+        // Clear old geometry
+        while (this.group.children.length > 0) {
+          this.group.remove(this.group.children[0]);
+        }
+        this.windows = [];
+
+        const height = this.currentHeight;
+        // Claude-style buildings have multiple tiers
+        const tiers = this.isClaudeStyle ? Math.max(1, Math.floor(height / 12)) : 1;
+        let currentY = 0;
+        let w = this.baseWidth;
+        let d = this.baseDepth;
+
+        for (let t = 0; t < tiers; t++) {
+          const tierH = height / tiers;
+          const body = new THREE.Mesh(
+            new THREE.BoxGeometry(w, tierH, d),
+            new THREE.MeshStandardMaterial({ color: this.color, roughness: 0.8, metalness: 0.2 })
+          );
+          body.position.y = currentY + tierH / 2;
+          this.group.add(body);
+
+          // Front/Back Windows (existing behavior)
+          const rows = Math.floor(tierH / 1.5);
+          const cols = Math.floor(w / 1.0);
+          for (let row = 0; row < rows; row++) {
+            for (let col = 0; col < cols; col++) {
+              const wx = (col - (cols - 1) / 2) * 1.0;
+              const wy = currentY + row * 1.5 + 1;
+              const isLit = Math.random() < 0.2;
+
+              const win = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.5, 0.8),
+                new THREE.MeshBasicMaterial({ color: isLit ? 0xffffcc : 0x0a0a15, transparent: true, opacity: 0.9 })
+              );
+              win.position.set(wx, wy, d / 2 + 0.01);
+              this.group.add(win);
+              this.windows.push({ mesh: win, lit: isLit, targetColor: null, flashTime: 0 });
+
+              const backWin = win.clone();
+              backWin.material = win.material.clone();
+              backWin.position.z = -d / 2 - 0.01;
+              backWin.rotation.y = Math.PI;
+              this.group.add(backWin);
+            }
+          }
+
+          // Trim
+          const trim = new THREE.Mesh(
+            new THREE.BoxGeometry(w + 0.15, 0.2, d + 0.15),
+            new THREE.MeshStandardMaterial({ color: this.accentColor, emissive: this.accentColor, emissiveIntensity: 0.3 })
+          );
+          trim.position.y = currentY + tierH;
+          this.group.add(trim);
+
+          currentY += tierH;
+          w *= 0.9;
+          d *= 0.9;
+        }
+
+        // Beacon for Claude-style buildings
+        if (this.isClaudeStyle) {
+          const beacon = new THREE.Mesh(
+            new THREE.SphereGeometry(0.6, 16, 16),
+            new THREE.MeshBasicMaterial({ color: 0xffaa44, transparent: true, opacity: 0.9 })
+          );
+          beacon.position.y = height + 2;
+          beacon.name = 'beacon';
+          this.group.add(beacon);
+
+          const glow = new THREE.Mesh(
+            new THREE.SphereGeometry(2, 16, 16),
+            new THREE.MeshBasicMaterial({ color: 0xffaa44, transparent: true, opacity: 0.15 })
+          );
+          glow.position.y = height + 2;
+          glow.name = 'beaconGlow';
+          this.group.add(glow);
+
+          // Energy beam - vertical light column that intensifies with activity
+          const beamGeo = new THREE.CylinderGeometry(0.3, 1.5, height + 10, 8, 1, true);
+          const beamMat = new THREE.MeshBasicMaterial({
+            color: this.accentColor,
+            transparent: true,
+            opacity: 0,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending
+          });
+          this.energyBeam = new THREE.Mesh(beamGeo, beamMat);
+          this.energyBeam.position.y = (height + 10) / 2;
+          this.energyBeam.name = 'energyBeam';
+          this.group.add(this.energyBeam);
+
+          // Activity ring - expands outward on tool use
+          const ringGeo = new THREE.RingGeometry(this.baseWidth, this.baseWidth + 0.5, 32);
+          const ringMat = new THREE.MeshBasicMaterial({
+            color: this.accentColor,
+            transparent: true,
+            opacity: 0,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending
+          });
+          this.activityRing = new THREE.Mesh(ringGeo, ringMat);
+          this.activityRing.rotation.x = -Math.PI / 2;
+          this.activityRing.position.y = 0.1;
+          this.activityRing.name = 'activityRing';
+          this.group.add(this.activityRing);
+        }
+      }
+
+      addSign() {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 256;
+        canvas.height = 64;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, 256, 64);
+        ctx.font = 'bold 28px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const hex = '#' + this.accentColor.toString(16).padStart(6, '0');
+        ctx.shadowColor = hex;
+        ctx.shadowBlur = 15;
+        ctx.fillStyle = hex;
+        ctx.fillText(this.name, 128, 32);
+        ctx.fillText(this.name, 128, 32);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        const sign = new THREE.Mesh(
+          new THREE.PlaneGeometry(5, 1.2),
+          new THREE.MeshBasicMaterial({ map: texture, transparent: true })
+        );
+        sign.position.set(0, this.currentHeight * 0.6, this.baseDepth / 2 + 0.3);
+        sign.name = 'sign';
+        this.group.add(sign);
+      }
+
+      setHeight(newHeight) {
+        this.targetHeight = Math.max(this.minHeight, Math.min(this.maxHeight, newHeight));
+      }
+
+      activateTool(tool) {
+        const color = TOOL_COLORS[tool] || TOOL_COLORS.default;
+        this.activeTools.set(tool, { color, startTime: Date.now() });
+
+        // Track tool history for multi-color effects
+        this.toolHistory.unshift({ color, time: Date.now() });
+        if (this.toolHistory.length > 5) this.toolHistory.pop();
+
+        // Increase activity level - more context = more lit windows
+        this.activityLevel = Math.min(1, this.activityLevel + 0.15);
+        this.lastActivityTime = Date.now();
+        this.isIdle = false;
+
+        // Trigger activity burst for visual pulse
+        this.activityBurst = 1.0;
+
+        // Cascade windows from bottom to top for dramatic effect
+        const sortedWindows = [...this.windows].sort((a, b) =>
+          a.mesh.position.y - b.mesh.position.y
+        );
+        const cascadeCount = Math.min(12, sortedWindows.length);
+        for (let i = 0; i < cascadeCount; i++) {
+          const win = sortedWindows[Math.floor((i / cascadeCount) * sortedWindows.length)];
+          this.windowCascade.push({
+            window: win,
+            color,
+            delay: i * 0.05,
+            timer: 0
+          });
+        }
+
+        // Also light random windows immediately
+        const num = Math.min(8, this.windows.length);
+        for (let i = 0; i < num; i++) {
+          const win = this.windows[Math.floor(Math.random() * this.windows.length)];
+          win.targetColor = color;
+          win.flashTime = 4.0;
+        }
+      }
+
+      addContext(amount) {
+        // Called when context increases - light up more windows
+        this.activityLevel = Math.min(1, this.activityLevel + amount * 0.002);
+        this.lastActivityTime = Date.now();
+        this.isIdle = false;
+      }
+
+      deactivateTool(tool) {
+        this.activeTools.delete(tool);
+      }
+
+      setWaiting(w) {
+        this.waitingForUser = w;
+      }
+
+      update(time, delta) {
+        this.pulsePhase += delta * 2;
+
+        // Check for idle state
+        const timeSinceActivity = Date.now() - this.lastActivityTime;
+        this.isIdle = timeSinceActivity > this.idleThreshold && this.activeTools.size === 0;
+
+        // Slowly decrease activity level when no input
+        if (this.activeTools.size === 0) {
+          this.activityLevel = Math.max(0, this.activityLevel - delta * 0.05);
+        }
+
+        // Decay activity burst
+        if (this.activityBurst > 0) {
+          this.activityBurst = Math.max(0, this.activityBurst - delta * 1.5);
+        }
+
+        // Smooth height transition
+        if (Math.abs(this.currentHeight - this.targetHeight) > 0.5) {
+          this.currentHeight += (this.targetHeight - this.currentHeight) * delta * 2;
+          this.buildStructure();
+          if (this.name) this.addSign();
+        }
+
+        // Process window cascade queue
+        for (let i = this.windowCascade.length - 1; i >= 0; i--) {
+          const cascade = this.windowCascade[i];
+          cascade.timer += delta;
+          if (cascade.timer >= cascade.delay) {
+            cascade.window.targetColor = cascade.color;
+            cascade.window.flashTime = 3.0;
+            this.windowCascade.splice(i, 1);
+          }
+        }
+
+        // Calculate how many windows should be lit based on activity
+        const targetLitCount = Math.floor(this.windows.length * this.activityLevel);
+
+        // Windows behavior
+        this.windows.forEach((win, i) => {
+          if (win.flashTime > 0) {
+            win.flashTime -= delta * 0.3;
+            if (win.targetColor) {
+              win.mesh.material.color.setHex(win.targetColor);
+              win.lit = true;
+            }
+          } else if (win.lit && i >= targetLitCount) {
+            if (Math.random() < delta * 0.5) {
+              win.lit = false;
+              win.mesh.material.color.setHex(0x0a0a15);
+            }
+          }
+
+          if (this.isIdle && !win.lit) {
+            win.mesh.material.color.setHex(0x080810);
+          }
+
+          if (this.waitingForUser && !win.lit) {
+            const pulse = (Math.sin(this.pulsePhase * 0.5 + i * 0.1) + 1) / 2;
+            win.mesh.material.color.setRGB(0.1 + pulse * 0.1, 0.08 + pulse * 0.08, 0.05);
+          }
+        });
+
+        // When active, occasionally light up windows - more frequently when busy
+        const flickerChance = 0.03 + this.activityLevel * 0.05;
+        if (this.activeTools.size > 0 && Math.random() < flickerChance) {
+          const tools = Array.from(this.activeTools.values());
+          const t = tools[Math.floor(Math.random() * tools.length)];
+          const win = this.windows[Math.floor(Math.random() * this.windows.length)];
+          if (win) {
+            win.targetColor = t.color;
+            win.flashTime = 4.0;
+          }
+        }
+
+        // Energy beam - intensifies with activity
+        if (this.energyBeam) {
+          const beamIntensity = this.activityLevel * 0.3 + this.activityBurst * 0.5;
+          this.energyBeam.material.opacity = beamIntensity;
+          this.energyBeam.scale.x = 1 + this.activityBurst * 0.5;
+          this.energyBeam.scale.z = 1 + this.activityBurst * 0.5;
+
+          // Color shifts based on active tools
+          if (this.toolHistory.length > 0) {
+            this.energyBeam.material.color.setHex(this.toolHistory[0].color);
+          }
+        }
+
+        // Activity ring - pulses outward on burst
+        if (this.activityRing) {
+          const ringScale = 1 + (1 - this.activityBurst) * 3;
+          this.activityRing.scale.set(ringScale, ringScale, 1);
+          this.activityRing.material.opacity = this.activityBurst * 0.6;
+
+          if (this.toolHistory.length > 0) {
+            this.activityRing.material.color.setHex(this.toolHistory[0].color);
+          }
+        }
+
+        // Beacon
+        const beacon = this.group.getObjectByName('beacon');
+        const glow = this.group.getObjectByName('beaconGlow');
+        if (beacon && glow) {
+          const pulse = (Math.sin(this.pulsePhase) + 1) / 2;
+          let beaconColor, beaconOpacity;
+
+          if (this.waitingForUser) {
+            beaconColor = 0xff2222;
+            beaconOpacity = 0.5 + pulse * 0.5;
+          } else if (this.isIdle) {
+            beaconColor = 0x553311;
+            beaconOpacity = 0.3 + pulse * 0.2;
+          } else {
+            beaconColor = 0xffaa44;
+            beaconOpacity = 0.7 + pulse * 0.3 + this.activityBurst * 0.3;
+          }
+
+          beacon.material.color.setHex(beaconColor);
+          glow.material.color.setHex(beaconColor);
+          beacon.material.opacity = beaconOpacity;
+          glow.scale.setScalar(1 + pulse * 0.3 + this.activityBurst * 0.8);
+        }
+
+      }
+    }
+
+    // Create buildings
+    const buildings = new Map();
+    // Main building is created via getOrCreateSessionBuilding('default') below
+    // Tool buildings removed - traffic comes from off-screen instead
+
+    // Session buildings - one per Claude Code instance
+    const sessionBuildings = new Map();
+    const sessionPositions = [
+      { x: 0, z: 0 },      // First session at center
+      { x: -35, z: 0 },    // Second session to the left
+      { x: 35, z: 0 },     // Third session to the right
+      { x: 0, z: -35 },    // Fourth session behind
+      { x: -35, z: -35 },
+      { x: 35, z: -35 },
+    ];
+    let nextSessionPos = 0;
+
+    function getOrCreateSessionBuilding(sessionId) {
+      if (!sessionId) sessionId = 'default';
+      if (sessionBuildings.has(sessionId)) return sessionBuildings.get(sessionId);
+
+      const pos = sessionPositions[nextSessionPos % sessionPositions.length];
+      nextSessionPos++;
+
+      const building = new Building(pos.x, pos.z, {
+        isMain: nextSessionPos === 1, // First one is THE main
+        claudeStyle: true,
+        width: 8,
+        depth: 6,
+        minHeight: 15,
+        maxHeight: 80,
+        name: nextSessionPos === 1 ? 'CLAUDE' : `CLAUDE ${nextSessionPos}`,
+        accentColor: 0xd4a574
+      });
+
+      sessionBuildings.set(sessionId, { building, agentCount: 0, nextAgentAngle: 0 });
+      buildings.set(sessionId, building);
+      updateBuildingCount();
+      return sessionBuildings.get(sessionId);
+    }
+
+    // Agent buildings - spawned around their parent session
+    const agentBuildings = new Map();
+
+    function spawnAgentBuilding(agentId, agentType, sessionId) {
+      if (agentBuildings.has(agentId)) {
+        return agentBuildings.get(agentId).building;
+      }
+
+      const session = getOrCreateSessionBuilding(sessionId);
+      const parentBuilding = session.building;
+
+      // Position agents in a circle around their parent session
+      const angle = session.nextAgentAngle;
+      session.nextAgentAngle += Math.PI / 3; // 60 degrees apart
+      session.agentCount++;
+
+      const radius = 18 + Math.random() * 5;
+      const x = parentBuilding.x + Math.cos(angle) * radius;
+      const z = parentBuilding.z + Math.sin(angle) * radius - 5;
+
+      const building = new Building(x, z, {
+        claudeStyle: true,
+        width: 5 + Math.random() * 2,
+        depth: 4 + Math.random(),
+        minHeight: 12,
+        maxHeight: 60,
+        name: agentType || 'AGENT',
+        accentColor: 0xd4a574
+      });
+
+      // Start with dramatic rise animation
+      building.group.position.y = -10; // Start below ground
+      building.group.scale.set(0.1, 0.1, 0.1); // Start tiny
+
+      // Spawn burst effect at location
+      const burstColor = 0xbd93f9; // Task purple
+      for (let i = 0; i < 20; i++) {
+        const spark = new THREE.Mesh(
+          new THREE.SphereGeometry(0.2, 6, 6),
+          new THREE.MeshBasicMaterial({
+            color: burstColor,
+            transparent: true,
+            opacity: 1,
+            blending: THREE.AdditiveBlending
+          })
+        );
+        spark.position.set(x, 0.5, z);
+        spark.userData = {
+          velocity: new THREE.Vector3(
+            (Math.random() - 0.5) * 15,
+            5 + Math.random() * 10,
+            (Math.random() - 0.5) * 15
+          ),
+          life: 1
+        };
+        scene.add(spark);
+        agentSpawnSparks.push(spark);
+      }
+
+      agentBuildings.set(agentId, {
+        building,
+        sessionId,
+        context: 0,
+        active: true,
+        startTime: Date.now(),
+        spawning: true, // Flag for rise animation
+        spawnProgress: 0
+      });
+      buildings.set(agentId, building);
+      updateBuildingCount();
+      return building;
+    }
+
+    // Sparks for agent spawn effect
+    const agentSpawnSparks = [];
+
+    // File buildings - satellite buildings for files that are read/written
+    const fileBuildings = new Map();
+    let fileAngleOffset = 0;
+
+    function getOrCreateFileBuilding(filePath, sessionId) {
+      // Use just filename as key to avoid duplicates from different paths to same file
+      const fileName = filePath.split(/[/\\]/).pop();
+      const fileKey = `${sessionId}:${fileName}`;
+
+      if (fileBuildings.has(fileKey)) {
+        return fileBuildings.get(fileKey);
+      }
+
+      const session = getOrCreateSessionBuilding(sessionId);
+      const parentBuilding = session.building;
+
+      // Position files in outer ring around session building
+      const angle = fileAngleOffset;
+      fileAngleOffset += Math.PI / 5; // 36 degrees apart
+
+      const radius = 30 + Math.random() * 8;
+      const x = parentBuilding.x + Math.cos(angle) * radius;
+      const z = parentBuilding.z + Math.sin(angle) * radius;
+
+      const building = new Building(x, z, {
+        claudeStyle: false,
+        width: 3 + Math.random() * 2,
+        depth: 3 + Math.random() * 2,
+        minHeight: 15,
+        maxHeight: 50,
+        name: fileName.slice(0, 12),
+        color: 0x1a2a1a, // Greenish tint for files
+        accentColor: 0x50fa7b // Green accent
+      });
+
+      // Small spawn effect
+      for (let i = 0; i < 8; i++) {
+        const spark = new THREE.Mesh(
+          new THREE.SphereGeometry(0.15, 6, 6),
+          new THREE.MeshBasicMaterial({
+            color: 0x50fa7b,
+            transparent: true,
+            opacity: 1,
+            blending: THREE.AdditiveBlending
+          })
+        );
+        spark.position.set(x, 0.5, z);
+        spark.userData = {
+          velocity: new THREE.Vector3(
+            (Math.random() - 0.5) * 8,
+            3 + Math.random() * 5,
+            (Math.random() - 0.5) * 8
+          ),
+          life: 1
+        };
+        scene.add(spark);
+        agentSpawnSparks.push(spark);
+      }
+
+      // Create connection line from session building to file building
+      const lineMat = new THREE.LineBasicMaterial({
+        color: 0x50fa7b,
+        transparent: true,
+        opacity: 0.4
+      });
+      const lineGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(parentBuilding.x, 0.1, parentBuilding.z),
+        new THREE.Vector3(x, 0.1, z)
+      ]);
+      const connectionLine = new THREE.Line(lineGeo, lineMat);
+      scene.add(connectionLine);
+
+      const fileData = {
+        building,
+        sessionId,
+        filePath,
+        fileName,
+        fileSize: 0,
+        lastAccess: Date.now(),
+        connectionLine
+      };
+
+      fileBuildings.set(fileKey, fileData);
+      buildings.set(fileKey, building);
+      updateBuildingCount();
+      return fileData;
+    }
+
+    function updateFileBuildingSize(filePath, sessionId, lineCount) {
+      const fileName = filePath.split(/[/\\]/).pop();
+      const fileKey = `${sessionId}:${fileName}`;
+      const fileData = fileBuildings.get(fileKey);
+
+      if (fileData) {
+        // Height based on line count (log scale) - make it substantial
+        const heightScale = Math.log10(lineCount + 1) * 15 + 10;
+        fileData.building.setHeight(Math.min(heightScale, 50));
+        fileData.fileSize = lineCount;
+        fileData.lastAccess = Date.now();
+      }
+    }
+
+    function growAgentBuilding(agentId, tokens) {
+      const agentData = agentBuildings.get(agentId);
+      if (agentData) {
+        agentData.context += tokens;
+        // Scale height based on agent's context (log scale, similar to main)
+        const heightScale = Math.log10(agentData.context + 1) * 12 + 12;
+        agentData.building.setHeight(heightScale);
+      }
+    }
+
+    function removeAgentBuilding(agentId) {
+      const agentData = agentBuildings.get(agentId);
+      if (agentData) {
+        const { building, sessionId } = agentData;
+        // Mark as inactive immediately so traffic stops routing here
+        agentData.active = false;
+        // Fade out and remove after delay
+        setTimeout(() => {
+          scene.remove(building.group);
+          agentBuildings.delete(agentId);
+          buildings.delete(agentId);
+          const session = sessionBuildings.get(sessionId);
+          if (session) session.agentCount--;
+          updateBuildingCount();
+        }, 3000);
+      }
+    }
+
+    function updateBuildingCount() {
+      const total = sessionBuildings.size + agentBuildings.size + fileBuildings.size;
+      document.getElementById('stat-active').textContent = total;
+    }
+
+    // Initialize default session
+    getOrCreateSessionBuilding('default');
+
+    // Data cars - spawn and travel between buildings based on tokens
+    const dataCars = [];
+
+    // Token stream particles - visible energy flowing into buildings
+    const tokenStreams = [];
+
+    function spawnTokenStream(targetBuilding, color, intensity = 1) {
+      const particleCount = Math.floor(15 * intensity);
+      const particles = [];
+
+      for (let i = 0; i < particleCount; i++) {
+        const particle = new THREE.Mesh(
+          new THREE.SphereGeometry(0.15 + Math.random() * 0.1, 6, 6),
+          new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending
+          })
+        );
+
+        // Start from random position above and around the building
+        const angle = Math.random() * Math.PI * 2;
+        const radius = 8 + Math.random() * 15;
+        const startY = targetBuilding.currentHeight + 10 + Math.random() * 20;
+
+        particle.position.set(
+          targetBuilding.x + Math.cos(angle) * radius,
+          startY,
+          targetBuilding.z + Math.sin(angle) * radius
+        );
+
+        particle.userData = {
+          target: new THREE.Vector3(
+            targetBuilding.x + (Math.random() - 0.5) * 2,
+            targetBuilding.currentHeight * (0.3 + Math.random() * 0.6),
+            targetBuilding.z + (Math.random() - 0.5) * 2
+          ),
+          speed: 0.8 + Math.random() * 0.5,
+          life: 1,
+          delay: i * 0.03
+        };
+
+        scene.add(particle);
+        particles.push(particle);
+      }
+
+      tokenStreams.push({
+        particles,
+        startTime: Date.now()
+      });
+    }
+
+    // Update token streams in animation loop
+    function updateTokenStreams(delta) {
+      for (let s = tokenStreams.length - 1; s >= 0; s--) {
+        const stream = tokenStreams[s];
+        let allDead = true;
+
+        for (let p = stream.particles.length - 1; p >= 0; p--) {
+          const particle = stream.particles[p];
+
+          if (particle.userData.delay > 0) {
+            particle.userData.delay -= delta;
+            allDead = false;
+            continue;
+          }
+
+          // Move toward target
+          const dir = particle.userData.target.clone().sub(particle.position);
+          const dist = dir.length();
+
+          if (dist > 0.5) {
+            dir.normalize();
+            particle.position.add(dir.multiplyScalar(delta * particle.userData.speed * 30));
+            particle.userData.life -= delta * 0.5;
+            particle.material.opacity = particle.userData.life * 0.8;
+            allDead = false;
+          } else {
+            // Reached target - fade out
+            particle.userData.life -= delta * 3;
+            particle.material.opacity = Math.max(0, particle.userData.life * 0.8);
+
+            if (particle.userData.life <= 0) {
+              scene.remove(particle);
+              stream.particles.splice(p, 1);
+            } else {
+              allDead = false;
+            }
+          }
+        }
+
+        if (allDead || stream.particles.length === 0) {
+          tokenStreams.splice(s, 1);
+        }
+      }
+    }
+
+    // Grid-based path: straight lines with right-angle turns
+    class GridPath {
+      constructor(start, end) {
+        this.points = [];
+        const streetZ = 20; // Main street Z position
+
+        // Create waypoints for grid-based movement
+        this.points.push(start.clone());
+
+        // If starting from off-screen, come to the street first
+        if (Math.abs(start.x) > 50 || Math.abs(start.z) > 40) {
+          // Move to street level Z first
+          this.points.push(new THREE.Vector3(start.x, 0.3, streetZ));
+          // Then move along X to align with destination
+          this.points.push(new THREE.Vector3(end.x, 0.3, streetZ));
+        } else if (Math.abs(end.x) > 50 || Math.abs(end.z) > 40) {
+          // Going to off-screen: first align X, then go to street, then exit
+          this.points.push(new THREE.Vector3(end.x, 0.3, start.z));
+          this.points.push(new THREE.Vector3(end.x, 0.3, streetZ));
+        } else {
+          // Between buildings: L-shaped path
+          // Go along Z first, then X (or vice versa based on positions)
+          if (Math.abs(end.x - start.x) > Math.abs(end.z - start.z)) {
+            this.points.push(new THREE.Vector3(start.x, 0.3, streetZ));
+            this.points.push(new THREE.Vector3(end.x, 0.3, streetZ));
+          } else {
+            this.points.push(new THREE.Vector3(end.x, 0.3, start.z));
+          }
+        }
+
+        this.points.push(end.clone());
+
+        // Calculate total length for proper t interpolation
+        this.segmentLengths = [];
+        this.totalLength = 0;
+        for (let i = 0; i < this.points.length - 1; i++) {
+          const len = this.points[i].distanceTo(this.points[i + 1]);
+          this.segmentLengths.push(len);
+          this.totalLength += len;
+        }
+      }
+
+      getPoint(t) {
+        if (t <= 0) return this.points[0].clone();
+        if (t >= 1) return this.points[this.points.length - 1].clone();
+
+        const targetDist = t * this.totalLength;
+        let accumulated = 0;
+
+        for (let i = 0; i < this.segmentLengths.length; i++) {
+          if (accumulated + this.segmentLengths[i] >= targetDist) {
+            const segmentT = (targetDist - accumulated) / this.segmentLengths[i];
+            return this.points[i].clone().lerp(this.points[i + 1], segmentT);
+          }
+          accumulated += this.segmentLengths[i];
+        }
+
+        return this.points[this.points.length - 1].clone();
+      }
+    }
+
+    // Create a simple glowing light for traffic
+    function createCarMesh(color, size = 1) {
+      const car = new THREE.Group();
+      const s = size * 0.5;
+
+      // Main glow body
+      const bodyGeo = new THREE.BoxGeometry(1.2 * s, 0.3 * s, 0.6 * s);
+      const bodyMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending
+      });
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.position.y = 0.2;
+      car.add(body);
+
+      // Soft glow halo
+      const glowGeo = new THREE.BoxGeometry(1.8 * s, 0.15 * s, 0.9 * s);
+      const glowMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.3,
+        blending: THREE.AdditiveBlending
+      });
+      const glow = new THREE.Mesh(glowGeo, glowMat);
+      glow.position.y = 0.2;
+      car.add(glow);
+
+      // Small bright core
+      const coreMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.6
+      });
+      const core = new THREE.Mesh(new THREE.BoxGeometry(0.4 * s, 0.2 * s, 0.3 * s), coreMat);
+      core.position.y = 0.2;
+      car.add(core);
+
+      return car;
+    }
+
+    function spawnDataCar(from, to, color, size = 1) {
+      const car = createCarMesh(color, size * 2.5);
+
+      // Start point comes FROM inside the building
+      const start = new THREE.Vector3(from.x, 0, from.z - (from.baseDepth || 4) / 2);
+      // End point goes INTO the building
+      const end = new THREE.Vector3(to.x, 0, to.z - (to.baseDepth || 4) / 2);
+
+      const path = new GridPath(start, end);
+
+      // Create light trail
+      const trailLength = 15;
+      const trailPositions = new Float32Array(trailLength * 3);
+      for (let i = 0; i < trailLength; i++) {
+        trailPositions[i * 3] = start.x;
+        trailPositions[i * 3 + 1] = 0.3;
+        trailPositions[i * 3 + 2] = start.z;
+      }
+      const trailGeo = new THREE.BufferGeometry();
+      trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+      const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.4,
+        blending: THREE.AdditiveBlending
+      }));
+      scene.add(trail);
+
+      car.userData = {
+        path,
+        t: 0,
+        speed: 0.12 + Math.random() * 0.03,
+        from,
+        to,
+        toBuilding: to,
+        color,
+        waiting: false,
+        leaving: true,
+        entering: false,
+        opacity: 0,
+        fadeOut: 1.0,
+        age: 0,
+        maxAge: 30,
+        trail,
+        trailPositions: [],
+        trailLength
+      };
+
+      // Initialize trail positions
+      for (let i = 0; i < trailLength; i++) {
+        car.userData.trailPositions.push(start.clone());
+      }
+
+      // Start invisible
+      car.traverse(child => {
+        if (child.material) {
+          child.material.transparent = true;
+          child.material.opacity = 0;
+        }
+      });
+
+      car.position.copy(start);
+      scene.add(car);
+      dataCars.push(car);
+
+      return car;
+    }
+
+    // Check if car should slow down due to traffic ahead
+    function getCarAhead(car, distance = 5) {
+      const myPos = car.position;
+      for (const other of dataCars) {
+        if (other === car) continue;
+        // Skip cars that are entering or leaving buildings
+        if (other.userData.entering || other.userData.leaving) continue;
+
+        const dist = myPos.distanceTo(other.position);
+        if (dist < distance && dist > 0.5) {
+          // Check if other car is ahead (roughly same direction)
+          const nextPoint = car.userData.path.getPoint(Math.min(1, car.userData.t + 0.02));
+          const myDir = nextPoint.clone().sub(myPos);
+          if (myDir.length() > 0.01) {
+            myDir.normalize();
+            const toOther = other.position.clone().sub(myPos).normalize();
+            if (myDir.dot(toOther) > 0.3) {
+              return other;
+            }
+          }
+        }
+      }
+      return null;
+    }
+
+    // Street lights
+    for (let x = -40; x <= 40; x += 12) {
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.08, 0.1, 5, 8),
+        new THREE.MeshStandardMaterial({ color: 0x222233 })
+      );
+      pole.position.set(x, 2.5, 22);
+      scene.add(pole);
+
+      const lamp = new THREE.Mesh(
+        new THREE.SphereGeometry(0.25, 8, 8),
+        new THREE.MeshBasicMaterial({ color: 0xffdd88 })
+      );
+      lamp.position.set(x, 5.2, 22);
+      scene.add(lamp);
+
+      const pointLight = new THREE.PointLight(0xffdd88, 0.3, 15);
+      pointLight.position.set(x, 5, 22);
+      scene.add(pointLight);
+    }
+
+    // Context tracking
+    let contextSize = 0;
+    let stats = { tools: 0, successes: 0, failures: 0 };
+    let activeCount = 0;
+
+    function updateContext(tokens, sessionId) {
+      contextSize += tokens;
+      document.getElementById('stat-context').textContent = contextSize.toLocaleString();
+
+      // Scale session building height based on context (log scale)
+      const session = sessionBuildings.get(sessionId || 'default');
+      if (session) {
+        const heightScale = Math.log10(contextSize + 1) * 15 + 15;
+        session.building.setHeight(heightScale);
+        // Light up windows based on token activity
+        session.building.addContext(tokens);
+      }
+    }
+
+    function showBillboard(tool, detail = '') {
+      // Disabled - no popup notifications
+    }
+
+    // Off-screen positions for tool traffic (traffic comes from the edges)
+    function getOffscreenPosition(tool, sessionBuilding) {
+      const angle = {
+        'Read': 0, 'Write': Math.PI / 3, 'Edit': Math.PI / 3,
+        'Bash': Math.PI * 2/3, 'Glob': Math.PI, 'Grep': Math.PI,
+        'WebFetch': Math.PI * 4/3, 'WebSearch': Math.PI * 4/3,
+        'TodoWrite': Math.PI * 5/3
+      }[tool] || Math.random() * Math.PI * 2;
+
+      const distance = 80;
+      return {
+        x: sessionBuilding.x + Math.cos(angle) * distance,
+        z: sessionBuilding.z + Math.sin(angle) * distance - 20,
+        baseDepth: 2
+      };
+    }
+
+    // Track active Task agents - use a queue per session since toolUseId may not be available
+    const activeAgentQueues = new Map(); // sessionId -> [agentId, agentId, ...]
+    let agentCounter = 0;
+
+    function handleEvent(event) {
+      // Get or create session building for this Claude Code instance
+      const sessionId = event.sessionId || event.session_id || 'default';
+      const session = getOrCreateSessionBuilding(sessionId);
+      const sessionBuilding = session.building;
+
+      // Estimate tokens from event (rough approximation)
+      let tokens = 50; // base
+      if (event.toolInput) {
+        const inputStr = JSON.stringify(event.toolInput);
+        tokens += Math.floor(inputStr.length / 4);
+      }
+
+      if (event.type === 'tool_start') {
+        stats.tools++;
+        document.getElementById('stat-tools').textContent = stats.tools;
+
+        const tool = event.tool;
+        const color = TOOL_COLORS[tool] || TOOL_COLORS.default;
+        sessionBuilding.activateTool(tool);
+
+        // Spawn token stream particles flowing into the building
+        spawnTokenStream(sessionBuilding, color, 1 + tokens / 100);
+
+        // Special handling for Task - spawn a new agent building
+        if (tool === 'Task') {
+          agentCounter++;
+          const agentId = event.toolUseId || `agent_${agentCounter}`;
+          const agentType = event.toolInput?.subagent_type || event.toolInput?.description?.slice(0, 12) || 'AGENT';
+          const agentBuilding = spawnAgentBuilding(agentId, agentType.toUpperCase(), sessionId);
+
+          // Add to queue for this session
+          if (!activeAgentQueues.has(sessionId)) {
+            activeAgentQueues.set(sessionId, []);
+          }
+          activeAgentQueues.get(sessionId).push(agentId);
+
+          // Send data car to new agent building
+          spawnDataCar(sessionBuilding, agentBuilding, TOOL_COLORS.Task, 1.2);
+          agentBuilding.activateTool(tool);
+
+          showBillboard('AGENT', agentType);
+        } else {
+          // Regular tools - route through active agents if any, otherwise main building
+          const color = TOOL_COLORS[tool] || TOOL_COLORS.default;
+
+          // Find active agents for this session to route traffic through
+          let targetBuilding = sessionBuilding;
+          const activeAgentIds = Array.from(agentBuildings.entries())
+            .filter(([id, data]) => data.active && data.sessionId === sessionId)
+            .map(([id, data]) => ({ id, data }));
+
+          if (activeAgentIds.length > 0) {
+            // Route to a random active agent
+            const randomAgent = activeAgentIds[Math.floor(Math.random() * activeAgentIds.length)];
+            targetBuilding = randomAgent.data.building;
+            // Grow the agent that's doing the work
+            growAgentBuilding(randomAgent.id, tokens);
+          }
+
+          const offscreen = getOffscreenPosition(tool, targetBuilding);
+          spawnDataCar(offscreen, targetBuilding, color, 1);
+
+          if (['Bash', 'Write', 'Edit', 'Read'].includes(tool)) {
+            let detail = '';
+            if (event.toolInput?.file_path) detail = event.toolInput.file_path.split(/[/\\]/).pop();
+            if (event.toolInput?.command) detail = event.toolInput.command.slice(0, 30);
+            showBillboard(tool, detail);
+          }
+
+          // File operations - create satellite file buildings
+          if (['Read', 'Write', 'Edit'].includes(tool) && event.toolInput?.file_path) {
+            const filePath = event.toolInput.file_path;
+            const fileData = getOrCreateFileBuilding(filePath, sessionId);
+
+            // Traffic direction depends on operation
+            if (tool === 'Read') {
+              // Data flows FROM file TO claude
+              spawnDataCar(fileData.building, targetBuilding, TOOL_COLORS.Read, 0.8);
+            } else {
+              // Write/Edit: data flows FROM claude TO file
+              spawnDataCar(targetBuilding, fileData.building, TOOL_COLORS[tool], 0.8);
+            }
+
+          }
+        }
+
+        updateContext(tokens, sessionId);
+      }
+
+      if (event.type === 'tool_end') {
+        const tool = event.tool;
+        sessionBuilding.deactivateTool(tool);
+
+        // Special handling for Task - remove agent building (FIFO from queue)
+        if (tool === 'Task') {
+          const queue = activeAgentQueues.get(sessionId);
+          if (queue && queue.length > 0) {
+            // Remove oldest agent from queue (FIFO)
+            const agentId = queue.shift();
+            const agentInfo = agentBuildings.get(agentId);
+            if (agentInfo) {
+              // Send response car back
+              spawnDataCar(agentInfo.building, sessionBuilding, TOOL_COLORS.Task, event.success ? 1.5 : 0.5);
+              agentInfo.building.deactivateTool(tool);
+              removeAgentBuilding(agentId);
+            }
+          }
+        } else {
+          // Regular tools - response traffic, route through active agents if any
+          const color = TOOL_COLORS[tool] || TOOL_COLORS.default;
+          const responseSize = event.success ? 1.5 : 0.5;
+
+          // Find active agents for this session
+          let sourceBuilding = sessionBuilding;
+          const activeAgentIds = Array.from(agentBuildings.entries())
+            .filter(([id, data]) => data.active && data.sessionId === sessionId)
+            .map(([id, data]) => ({ id, data }));
+
+          if (activeAgentIds.length > 0) {
+            // Response comes from a random active agent
+            const randomAgent = activeAgentIds[Math.floor(Math.random() * activeAgentIds.length)];
+            sourceBuilding = randomAgent.data.building;
+            // Grow the agent with response tokens
+            growAgentBuilding(randomAgent.id, tokens * 2);
+          }
+
+          const offscreen = getOffscreenPosition(tool, sourceBuilding);
+          spawnDataCar(sourceBuilding, offscreen, color, responseSize);
+
+          // Update file building size after Read completes
+          if (tool === 'Read' && event.toolInput?.file_path) {
+            // Estimate line count generously - most files read are substantial
+            const estimatedLines = 200 + Math.random() * 800;
+            updateFileBuildingSize(event.toolInput.file_path, sessionId, estimatedLines);
+
+            // Send response traffic from file back to claude
+            const fileData = fileBuildings.get(`${sessionId}:${event.toolInput.file_path.split(/[/\\]/).pop()}`);
+            if (fileData) {
+              spawnDataCar(fileData.building, sourceBuilding, TOOL_COLORS.Read, responseSize);
+            }
+          }
+        }
+
+        // More context for response
+        updateContext(tokens * 2, sessionId);
+
+        if (event.success) {
+          stats.successes++;
+        } else {
+          stats.failures++;
+        }
+        const total = stats.successes + stats.failures;
+        if (total > 0) {
+          document.getElementById('stat-success').textContent = Math.round((stats.successes / total) * 100) + '%';
+        }
+      }
+
+      if (event.type === 'prompt') {
+        sessionBuilding.setWaiting(false);
+        updateContext(tokens * 3, sessionId);
+
+        for (let i = 0; i < 8; i++) {
+          const idx = Math.floor(Math.random() * sessionBuilding.windows.length);
+          if (sessionBuilding.windows[idx]) {
+            sessionBuilding.windows[idx].targetColor = 0xd4a574;
+            sessionBuilding.windows[idx].flashTime = 1.0;
+          }
+        }
+      }
+
+      if (event.tool === 'AskUserQuestion') {
+        sessionBuilding.setWaiting(true);
+      }
+
+      // Handle compaction - shrink buildings but not to zero
+      if (event.type === 'compact') {
+        // Reduce context to ~20% of current (compaction keeps summary)
+        contextSize = Math.max(500, Math.floor(contextSize * 0.2));
+        document.getElementById('stat-context').textContent = contextSize.toLocaleString();
+
+        // Shrink all session buildings
+        sessionBuildings.forEach((session) => {
+          const heightScale = Math.log10(contextSize + 1) * 15 + 15;
+          session.building.setHeight(heightScale);
+        });
+
+        // Clear all agent buildings (they're gone after compaction)
+        activeAgents.forEach((agentData, agentId) => {
+          if (agentData.building) {
+            scene.remove(agentData.building.group);
+          }
+        });
+        activeAgents.clear();
+      }
+
+      addToFeed(event);
+    }
+
+    function addToFeed(event) {
+      const feed = document.getElementById('events');
+      const div = document.createElement('div');
+      div.className = `event ${event.type} ${event.tool ? 'tool-' + event.tool : ''}`;
+      let detail = event.tool || '';
+      if (event.toolInput?.file_path) detail += ' - ' + event.toolInput.file_path.split(/[/\\]/).pop();
+      if (event.toolInput?.command) detail += ' - ' + event.toolInput.command.slice(0, 25) + '...';
+      div.innerHTML = `<div class="event-type">${event.type.replace('_', ' ').toUpperCase()}</div>${detail ? `<div class="event-detail">${detail}</div>` : ''}`;
+      feed.insertBefore(div, feed.firstChild);
+      while (feed.children.length > 12) feed.removeChild(feed.lastChild);
+    }
+
+    // WebSocket
+    function connect() {
+      console.log('Connecting to WebSocket at ws://' + location.host);
+      const ws = new WebSocket(`ws://${location.host}`);
+      ws.onopen = () => {
+        document.getElementById('status').className = 'connected';
+        document.getElementById('status').textContent = 'Online';
+      };
+      ws.onclose = () => {
+        document.getElementById('status').className = 'disconnected';
+        document.getElementById('status').textContent = 'Offline';
+        setTimeout(connect, 2000);
+      };
+      ws.onerror = (err) => { console.error('WebSocket error:', err); ws.close(); };
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'event') handleEvent(msg.event);
+          else if (msg.type === 'history') msg.events.forEach(handleEvent);
+        } catch (err) {}
+      };
+    }
+    connect();
+
+    // Animation
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = Math.min(clock.getDelta(), 0.1);
+      const time = clock.getElapsedTime();
+
+      // Update buildings
+      buildings.forEach(b => b.update(time, delta));
+
+      // Update neon sign flickering (shared material - update once)
+      if (Math.random() < 0.02) {
+        neonMat.opacity = 0.5 + Math.random() * 0.3;
+        neonGlowMat.opacity = 0.15;
+      } else {
+        neonMat.opacity = 0.95;
+        neonGlowMat.opacity = 0.3;
+      }
+
+      // Update token stream particles
+      updateTokenStreams(delta);
+
+      // Grow active agents over time (simulating context accumulation)
+      agentBuildings.forEach((agentData, agentId) => {
+        if (agentData.active) {
+          // Handle spawn animation - dramatic rise from ground
+          if (agentData.spawning) {
+            agentData.spawnProgress += delta * 2; // Rise speed
+            const t = Math.min(1, agentData.spawnProgress);
+            const eased = 1 - Math.pow(1 - t, 3); // Ease out cubic
+
+            agentData.building.group.position.y = -10 + 10 * eased;
+            agentData.building.group.scale.setScalar(0.1 + 0.9 * eased);
+
+            if (t >= 1) {
+              agentData.spawning = false;
+              agentData.building.group.position.y = 0;
+              agentData.building.group.scale.set(1, 1, 1);
+            }
+          }
+
+          // Agents grow while active - more context = taller building
+          agentData.context += delta * 50;
+          const heightScale = Math.log10(agentData.context + 1) * 12 + 12;
+          agentData.building.setHeight(Math.min(heightScale, 60));
+
+          // Spawn token streams periodically for active agents
+          if (Math.random() < delta * 0.3) {
+            const colors = Array.from(agentData.building.activeTools.values());
+            if (colors.length > 0) {
+              spawnTokenStream(agentData.building, colors[0].color, 0.5);
+            }
+          }
+        }
+      });
+
+      // Update agent spawn sparks
+      for (let i = agentSpawnSparks.length - 1; i >= 0; i--) {
+        const spark = agentSpawnSparks[i];
+        spark.position.add(spark.userData.velocity.clone().multiplyScalar(delta));
+        spark.userData.velocity.y -= delta * 15; // Gravity
+        spark.userData.life -= delta * 1.5;
+        spark.material.opacity = spark.userData.life;
+
+        if (spark.userData.life <= 0) {
+          scene.remove(spark);
+          agentSpawnSparks.splice(i, 1);
+        }
+      }
+
+      // Update data cars with traffic queuing
+      for (let i = dataCars.length - 1; i >= 0; i--) {
+        const car = dataCars[i];
+
+        // Track age
+        car.userData.age += delta;
+
+        // Force fade out if too old
+        if (car.userData.age > car.userData.maxAge - 2) {
+          car.userData.entering = true;
+        }
+
+        // Check for car ahead - slow down or stop if too close
+        const carAhead = getCarAhead(car, 4);
+        let effectiveSpeed = car.userData.speed;
+
+        if (carAhead && !car.userData.entering && !car.userData.leaving) {
+          const dist = car.position.distanceTo(carAhead.position);
+          if (dist < 2.5) {
+            effectiveSpeed = car.userData.speed * 0.1; // Very slow, don't fully stop
+            car.userData.waiting = true;
+          } else {
+            effectiveSpeed = car.userData.speed * (dist - 2.5) / 1.5;
+            car.userData.waiting = false;
+          }
+        } else {
+          car.userData.waiting = false;
+        }
+
+        // When leaving building, slowly fade in
+        if (car.userData.leaving) {
+          effectiveSpeed = car.userData.speed * 0.5;
+          car.userData.opacity = Math.min(1, car.userData.opacity + delta * 1.2);
+
+          // Apply fade in to all meshes
+          car.traverse(child => {
+            if (child.material) {
+              child.material.opacity = car.userData.opacity * (child.material.userData?.baseOpacity || 0.8);
+            }
+          });
+
+          // Done leaving when past 12% of path
+          if (car.userData.t > 0.12) {
+            car.userData.leaving = false;
+          }
+        }
+
+        // Check if car is near destination and should start entering
+        if (car.userData.t > 0.88 && !car.userData.entering) {
+          car.userData.entering = true;
+        }
+
+        // When entering building, slow down and fade out
+        if (car.userData.entering) {
+          effectiveSpeed = car.userData.speed * 0.5;
+          car.userData.fadeOut -= delta * 1.2;
+
+          // Apply fade to all meshes
+          car.traverse(child => {
+            if (child.material) {
+              child.material.opacity = Math.max(0, car.userData.fadeOut * (child.material.userData?.baseOpacity || 0.8));
+            }
+          });
+        }
+
+        car.userData.t += delta * effectiveSpeed;
+
+        // Remove when fully faded, path complete, or too old
+        if (car.userData.fadeOut <= 0 || car.userData.t >= 1 || car.userData.age > car.userData.maxAge) {
+          scene.remove(car);
+          if (car.userData.trail) {
+            scene.remove(car.userData.trail);
+          }
+          dataCars.splice(i, 1);
+        } else {
+          const pos = car.userData.path.getPoint(car.userData.t);
+          const nextPos = car.userData.path.getPoint(Math.min(1, car.userData.t + 0.02));
+          car.position.copy(pos);
+
+          // Update light trail
+          if (car.userData.trail && car.userData.trailPositions) {
+            // Shift trail positions
+            car.userData.trailPositions.unshift(pos.clone());
+            if (car.userData.trailPositions.length > car.userData.trailLength) {
+              car.userData.trailPositions.pop();
+            }
+
+            // Update trail geometry
+            const positions = car.userData.trail.geometry.attributes.position.array;
+            for (let j = 0; j < car.userData.trailPositions.length; j++) {
+              const tp = car.userData.trailPositions[j];
+              positions[j * 3] = tp.x;
+              positions[j * 3 + 1] = tp.y + 0.3;
+              positions[j * 3 + 2] = tp.z;
+            }
+            car.userData.trail.geometry.attributes.position.needsUpdate = true;
+
+            // Fade trail with car
+            car.userData.trail.material.opacity = car.userData.opacity * car.userData.fadeOut * 0.4;
+          }
+
+          // Only look at next position if we're moving
+          if (effectiveSpeed > 0.01) {
+            car.lookAt(nextPos);
+          }
+        }
+      }
+
+      // Water shimmer
+      water.position.y = 0.01 + Math.sin(time * 0.5) * 0.02;
+
+      // Stars
+      stars.material.opacity = 0.7 + Math.sin(time * 0.3) * 0.2;
+
+      controls.update();
+      composer.render();
+    }
+
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
